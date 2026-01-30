@@ -1,32 +1,76 @@
 import type { CollectionSlug, Config } from 'payload'
 
 import { customEndpointHandler } from './endpoints/customEndpointHandler.js'
+import { translateHandler, setGlobalDeepLApiKey } from './endpoints/translateHandler.js'
+
+export type LocaleOption = {
+  label: string
+  value: string
+}
 
 export type TranslationPluginConfig = {
   /**
-   * List of collections to add a custom field
+   * DeepL API key (required)
+   */
+  deepLApiKey: string
+  /**
+   * List of collections to enable translation for
    */
   collections?: Partial<Record<CollectionSlug, true>>
+  /**
+   * Available locales for translation (defaults to ro/en/de)
+   */
+  locales?: LocaleOption[]
+  /**
+   * Disable the plugin
+   */
   disabled?: boolean
 }
 
 export const translationPlugin =
   (pluginOptions: TranslationPluginConfig) =>
   (config: Config): Config => {
+    // Validate DeepL API key
+    const deepLApiKey = pluginOptions.deepLApiKey || process.env.DEEPL_API_KEY
+    if (!deepLApiKey) {
+      throw new Error(
+        'Translation Plugin: deepLApiKey is required. Please provide it in plugin options or set DEEPL_API_KEY environment variable.',
+      )
+    }
+
+    // Default locales
+    const defaultLocales: LocaleOption[] = [
+      { label: 'Română', value: 'ro' },
+      { label: 'English', value: 'en' },
+      { label: 'Deutsch', value: 'de' },
+    ]
+    const locales = pluginOptions.locales || defaultLocales
+    
+    // Set global DeepL API key for the translate handler
+    setGlobalDeepLApiKey(deepLApiKey)
+
     if (!config.collections) {
       config.collections = []
     }
 
-    config.collections.push({
-      slug: 'plugin-collection',
-      fields: [
-        {
-          name: 'id',
-          type: 'text',
-        },
-      ],
-    })
+    // Check if plugin-collection already exists before adding it
+    const pluginCollectionExists = config.collections.some(
+      (collection) => collection.slug === 'plugin-collection',
+    )
 
+    if (!pluginCollectionExists) {
+      config.collections.push({
+        slug: 'plugin-collection',
+        fields: [
+          {
+            name: 'id',
+            type: 'text',
+          },
+        ],
+      })
+    }
+
+    // Add translation button to configured collections
     if (pluginOptions.collections) {
       for (const collectionSlug in pluginOptions.collections) {
         const collection = config.collections.find(
@@ -34,13 +78,33 @@ export const translationPlugin =
         )
 
         if (collection) {
-          collection.fields.push({
-            name: 'addedByPlugin',
-            type: 'text',
+          // Find the slug field and insert translation button after it
+          const slugFieldIndex = collection.fields.findIndex(
+            (field) => (field as any).name === 'slug',
+          )
+
+          const translationField = {
+            name: 'translation-button',
+            type: 'ui' as const,
             admin: {
-              position: 'sidebar',
+              components: {
+                Field: {
+                  path: `translation-plugin/client#TranslationField`,
+                  clientProps: {
+                    locales: locales,
+                  },
+                },
+              },
             },
-          })
+          }
+
+          if (slugFieldIndex !== -1) {
+            // Insert after slug field
+            collection.fields.splice(slugFieldIndex + 1, 0, translationField as any)
+          } else {
+            // If no slug field found, add at the beginning
+            collection.fields.unshift(translationField as any)
+          }
         }
       }
     }
@@ -80,6 +144,13 @@ export const translationPlugin =
       handler: customEndpointHandler,
       method: 'get',
       path: '/my-plugin-endpoint',
+    })
+
+    // Register translation endpoint
+    config.endpoints.push({
+      handler: translateHandler,
+      method: 'post',
+      path: '/translate',
     })
 
     const incomingOnInit = config.onInit
