@@ -1,13 +1,94 @@
-# Payload Plugin Template
+# Payload Translation Plugin
 
-A template repo to create a [Payload CMS](https://payloadcms.com) plugin.
+A [Payload CMS](https://payloadcms.com) plugin that adds DeepL-powered translation to your collections. Translate content between locales directly in the admin panel.
 
-Payload is built with a robust infrastructure intended to support Plugins with ease. This provides a simple, modular, and reusable way for developers to extend the core capabilities of Payload.
+## How to use this plugin
 
-To build your own Payload plugin, all you need is:
+### 1. Install
 
-- An understanding of the basic Payload concepts
-- And some JavaScript/Typescript experience
+Install from GitHub. From your Payload project folder:
+
+```bash
+# npm
+npm install git+https://github.com/CrIsTiLaz/translation-plugin.git
+
+# pnpm
+pnpm add git+https://github.com/CrIsTiLaz/translation-plugin.git
+
+# yarn
+yarn add git+https://github.com/CrIsTiLaz/translation-plugin.git
+```
+
+You can pin a specific branch or tag by appending `#main` or `#v1.0.0` to the URL.
+
+### 2. Configure
+
+Register the plugin in your Payload config (e.g. `src/plugins/index.ts`) with the collections you want to enable:
+
+```ts
+import { translationPlugin } from 'translation-plugin'
+
+export const plugins = [
+  // ... other plugins
+  translationPlugin({
+    collections: {
+      pages: true,
+      posts: true,
+      services: true,
+    },
+  }),
+]
+```
+
+### 3. Environment
+
+Set your DeepL API key in `.env`:
+
+```
+DEEPL_API_KEY=your_deepl_api_key_here
+```
+
+Get a key at [DeepL API](https://www.deepl.com/pro-api).
+
+### 4. Run the app
+
+```bash
+pnpm install
+pnpm dev
+```
+
+Then open the admin (e.g. [http://localhost:3000/admin](http://localhost:3000/admin)) and log in.
+
+### 5. Where to find the Translation field
+
+- Go to **Collections → Pages** (or **Posts** or **Services**, depending on your config).
+- Open an existing document, or create one and **save it once**.
+- The **Translation** field appears in the form (after slug/title) with **From**, **To**, and a **Translate** button.
+
+### 6. How to translate
+
+1. Make sure the document is **saved** (the button is disabled on new, unsaved docs).
+2. Choose **From** (source locale) and **To** (target locale).
+3. Click **Translate**.
+4. When it finishes, switch the document’s **Locale** (top of the form) to the target language to see the translated content.
+
+### 7. If the button is disabled
+
+- **Save the document first** — the plugin needs a saved document (with an ID) to call the API.
+- If it’s still disabled after saving, open the browser console and look for `[TranslateButton]` / `[TranslationField]` logs to check if `docId` or `collectionSlug` are missing.
+
+### 8. After changing the plugin
+
+If you change the plugin’s client exports or add new UI components:
+
+```bash
+cd your-payload-project
+pnpm generate:importmap
+```
+
+Then restart `pnpm dev`.
+
+---
 
 ## Background
 
