@@ -1,1 +1,1 @@
-export { BeforeDashboardServer } from '../components/BeforeDashboardServer.js'
+// Server components can be exported here in the future if needed
