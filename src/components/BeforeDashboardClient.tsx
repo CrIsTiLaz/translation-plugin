@@ -4,9 +4,8 @@ import { formatAdminURL } from 'payload/shared'
 import { useEffect, useState } from 'react'
 
 export const BeforeDashboardClient = () => {
-  const config = useConfig()
+  const { config } = useConfig()
 
-  // Early return if config is not available
   if (!config) {
     return null
   }

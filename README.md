@@ -6,20 +6,44 @@ A [Payload CMS](https://payloadcms.com) plugin that adds DeepL-powered translati
 
 ### 1. Install
 
-Install from GitHub. From your Payload project folder:
+This package is published as **prebuilt JavaScript** under `dist/`, committed to the repo so installs from GitHub include runnable entry files. Your app should **not** need `transpilePackages` for this dependency.
+
+**Payload:** `peerDependencies` require `payload@^3.37.0` (any Payload 3.x from 3.37 upward, including current 3.80.x lines, until 4.0).
+
+#### Installation from GitHub
+
+From your Payload + Next.js app root:
 
 ```bash
-# npm
-npm install git+https://github.com/CrIsTiLaz/translation-plugin.git
+# npm (short GitHub specifier)
+npm install translation-plugin@github:CrIsTiLaz/translation-plugin
+
+# Or full git URL (optional branch/tag: #dev, #v1.0.0, etc.)
+npm install git+https://github.com/CrIsTiLaz/translation-plugin.git#dev
 
 # pnpm
-pnpm add git+https://github.com/CrIsTiLaz/translation-plugin.git
+pnpm add github:CrIsTiLaz/translation-plugin
 
 # yarn
-yarn add git+https://github.com/CrIsTiLaz/translation-plugin.git
+yarn add github:CrIsTiLaz/translation-plugin
 ```
 
-You can pin a specific branch or tag by appending `#main` or `#v1.0.0` to the URL.
+**After install, confirm the package contains `dist` (not only `package.json` and `README.md`):**
+
+```bash
+ls node_modules/translation-plugin
+# Expect: dist/  package.json  README.md
+
+# Resolve the main entry (CommonJS resolver works for resolution; the package is ESM at runtime)
+node -e "console.log(require.resolve('translation-plugin'))"
+# Expect a path ending in .../node_modules/translation-plugin/dist/index.js
+```
+
+For pure ESM (Node 20+):
+
+```bash
+node --input-type=module -e "import { createRequire } from 'node:module'; const r = createRequire(import.meta.url); console.log(r.resolve('translation-plugin'));"
+```
 
 ### 2. Configure
 
@@ -31,6 +55,7 @@ import { translationPlugin } from 'translation-plugin'
 export const plugins = [
   // ... other plugins
   translationPlugin({
+    deepLApiKey: process.env.DEEPL_API_KEY!,
     collections: {
       pages: true,
       posts: true,
@@ -59,3 +84,6 @@ pnpm dev
 
 Then open the admin (e.g. [http://localhost:3000/admin](http://localhost:3000/admin)) and log in.
 
+## Contributing / releasing
+
+After changing `src/`, run `npm run build` and commit the updated `dist/` so GitHub installs stay usable. `prepublishOnly` runs the same build before `npm publish`.

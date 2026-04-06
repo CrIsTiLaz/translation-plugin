@@ -1,0 +1,1 @@
+{"version":3,"sources":["../../src/exports/client.ts"],"sourcesContent":["export { default as TranslateButton } from '../components/TranslateButton.js'\nexport { TranslationField } from '../components/TranslationField.js'\n"],"names":["default","TranslateButton","TranslationField"],"mappings":"AAAA,SAASA,WAAWC,eAAe,QAAQ,mCAAkC;AAC7E,SAASC,gBAAgB,QAAQ,oCAAmC"}

@@ -102,7 +102,9 @@ export const translationPlugin =
             
             if (typeof field === 'function') {
               try {
-                const resolved = field({})
+                const resolved = (field as (opts: Record<string, unknown>) => { name?: string; type?: string })(
+                  {},
+                )
                 fieldInfo.resolved = {
                   name: resolved?.name,
                   type: resolved?.type,
