@@ -122,16 +122,10 @@ export default function TranslateButton({
       const apiRoute = config?.routes?.api || '/api'
       const translateUrl = `${apiRoute}/translate`
 
-      // Convert id to number if it's a numeric string
-      const docIdNum =
-        typeof effectiveId === 'string' && !Number.isNaN(Number(effectiveId))
-          ? Number.parseInt(effectiveId, 10)
-          : (effectiveId as number)
-
       const res = await fetch(translateUrl, {
         body: JSON.stringify({
           collection: String(effectiveCollectionSlug),
-          docId: docIdNum,
+          docId: typeof effectiveId === 'number' ? effectiveId : String(effectiveId),
           fieldName: fieldToTranslate,
           sourceLocale: src,
           targetLocale: tgt,

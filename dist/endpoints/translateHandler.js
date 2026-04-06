@@ -1,9 +1,172 @@
 import { createLocalReq } from 'payload';
+import { fieldAffectsData, fieldShouldBeLocalized, tabHasName } from 'payload/shared';
 import { Translator } from 'deepl-node';
 // Store DeepL API key globally (set by plugin)
 let globalDeepLApiKey;
 export function setGlobalDeepLApiKey(apiKey) {
     globalDeepLApiKey = apiKey;
+}
+/**
+ * Payload accepts numeric ids as numbers; Mongo-style and UUID strings stay strings.
+ * Only coerce plain digit strings (no leading zeros) to number.
+ */ export function normalizeDocumentId(raw) {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+        return raw;
+    }
+    const s = String(raw).trim();
+    if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        if (Number.isSafeInteger(n) && String(n) === s) {
+            return n;
+        }
+    }
+    return s;
+}
+function pathsEqual(a, b) {
+    return a.length === b.length && a.every((seg, i)=>seg === b[i]);
+}
+/** Longest prefix of jobPath that equals a localized schema path (exact match on prefix segments). */ function localizedRootForJobPath(jobPath, localizedPaths) {
+    for(let len = jobPath.length; len >= 1; len--){
+        const prefix = jobPath.slice(0, len);
+        if (localizedPaths.some((L)=>pathsEqual(L, prefix))) {
+            return prefix;
+        }
+    }
+    return null;
+}
+function getAt(obj, path) {
+    let cur = obj;
+    for (const segment of path){
+        if (cur == null) {
+            return undefined;
+        }
+        cur = cur[segment];
+    }
+    return cur;
+}
+function setAt(target, path, value) {
+    if (path.length === 0) {
+        return;
+    }
+    let cur = target;
+    for(let i = 0; i < path.length - 1; i++){
+        const p = path[i];
+        if (cur[p] == null || typeof cur[p] !== 'object') {
+            cur[p] = {};
+        }
+        cur = cur[p];
+    }
+    cur[path[path.length - 1]] = value;
+}
+function deepClone(v) {
+    return structuredClone(v);
+}
+function deepEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+/**
+ * Collect exact data paths for fields that should be stored per locale (Payload schema).
+ */ function collectLocalizedSchemaPaths(fields, parentIsLocalized, prefix, out) {
+    if (!fields?.length) {
+        return;
+    }
+    for (const field of fields){
+        if (!field || field.type === 'ui') {
+            continue;
+        }
+        if (field.type === 'tabs' && field.tabs) {
+            for (const tab of field.tabs){
+                const nextPrefix = tabHasName(tab) && tab.name ? [
+                    ...prefix,
+                    String(tab.name)
+                ] : prefix;
+                collectLocalizedSchemaPaths(tab.fields || [], parentIsLocalized, nextPrefix, out);
+            }
+            continue;
+        }
+        if ((field.type === 'row' || field.type === 'collapsible') && !('name' in field && field.name)) {
+            collectLocalizedSchemaPaths(field.fields || [], parentIsLocalized, prefix, out);
+            continue;
+        }
+        if (field.type === 'tab') {
+            const nextPrefix = 'name' in field && field.name ? [
+                ...prefix,
+                String(field.name)
+            ] : prefix;
+            collectLocalizedSchemaPaths(field.fields || [], parentIsLocalized, nextPrefix, out);
+            continue;
+        }
+        if (!fieldAffectsData(field)) {
+            continue;
+        }
+        const name = String(field.name);
+        const path = [
+            ...prefix,
+            name
+        ];
+        const loc = fieldShouldBeLocalized({
+            field,
+            parentIsLocalized
+        });
+        if (field.type === 'group' && field.fields?.length) {
+            if (loc) {
+                out.push(path);
+            } else {
+                collectLocalizedSchemaPaths(field.fields, parentIsLocalized, path, out);
+            }
+            continue;
+        }
+        if (field.type === 'array' && field.fields?.length) {
+            if (loc) {
+                out.push(path);
+            } else {
+                collectLocalizedSchemaPaths(field.fields, parentIsLocalized, path, out);
+            }
+            continue;
+        }
+        if (field.type === 'blocks') {
+            if (loc) {
+                out.push(path);
+            } else {
+                for (const block of field.blocks || []){
+                    if (block?.fields?.length) {
+                        collectLocalizedSchemaPaths(block.fields, parentIsLocalized, path, out);
+                    }
+                }
+            }
+            continue;
+        }
+        const hasSubFields = (field.type === 'collapsible' || field.type === 'row') && field.fields?.length;
+        if (hasSubFields) {
+            collectLocalizedSchemaPaths(field.fields, parentIsLocalized, path, out);
+            continue;
+        }
+        if (loc) {
+            out.push(path);
+        }
+    }
+}
+/** Remove timestamps / status from update payload; keep row `id` inside arrays. */ function stripReservedKeysFromPatch(value) {
+    if (value === null || typeof value !== 'object') {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.map(stripReservedKeysFromPatch);
+    }
+    const next = {};
+    for (const [k, v] of Object.entries(value)){
+        if (k === 'createdAt' || k === 'updatedAt' || k === '_status') {
+            continue;
+        }
+        next[k] = stripReservedKeysFromPatch(v);
+    }
+    return next;
+}
+function prepareRootPatch(patch) {
+    const cleaned = stripReservedKeysFromPatch(deepClone(patch));
+    delete cleaned.id;
+    delete cleaned.collection;
+    return cleaned;
 }
 export const translateHandler = async (req)=>{
     console.log('[Translate API] Request received');
@@ -17,7 +180,6 @@ export const translateHandler = async (req)=>{
     }
     let body;
     try {
-        // PayloadRequest extends Request, so we can use json() method
         body = await req.json();
     } catch  {
         return Response.json({
@@ -27,28 +189,41 @@ export const translateHandler = async (req)=>{
         });
     }
     const { docId, collection, fieldName, sourceLocale, targetLocale } = body || {};
-    if (!docId || !collection || !fieldName || !sourceLocale || !targetLocale) {
+    if (docId === undefined || docId === null || !collection || !fieldName || !sourceLocale || !targetLocale) {
         return Response.json({
             error: 'Missing required fields'
         }, {
             status: 400
         });
     }
+    const normalizedId = normalizeDocumentId(docId);
+    const collectionEntity = Object.values(payload.collections).find((c)=>c.config.slug === collection);
+    if (!collectionEntity?.config?.fields) {
+        return Response.json({
+            error: `Unknown collection: ${collection}`
+        }, {
+            status: 400
+        });
+    }
+    const localizedSchemaPaths = [];
+    collectLocalizedSchemaPaths(collectionEntity.config.fields, false, [], localizedSchemaPaths);
+    const pathKey = (p)=>p.map(String).join('\0');
+    const uniqueLocalizedPaths = Array.from(new Map(localizedSchemaPaths.map((p)=>[
+            pathKey(p),
+            p
+        ])).values());
     try {
-        const numericId = Number.parseInt(String(docId), 10);
-        // 1. Fetch Source Document
         const payloadReq = await createLocalReq({
             user,
             locale: sourceLocale
         }, payload);
         const doc = await payload.findByID({
             collection: collection,
-            id: numericId,
+            id: normalizedId,
             locale: sourceLocale,
             depth: 10,
             req: payloadReq
         });
-        // 2. Setup DeepL
         const apiKey = globalDeepLApiKey || process.env.DEEPL_API_KEY;
         if (!apiKey) {
             return Response.json({
@@ -61,17 +236,14 @@ export const translateHandler = async (req)=>{
         const deepLSource = mapDeepLSource(sourceLocale);
         const deepLTarget = mapDeepLTarget(targetLocale);
         const jobs = [];
-        // Helper: Register a string for translation
-        const registerForTranslation = (ref, key, text)=>{
-            if (!text || typeof text !== 'string' || !text.trim()) return;
-            // --- FILTER LOGIC ---
-            // 1. Skip MongoDB IDs (24 hex chars)
+        const registerForTranslation = (ref, key, text, documentPath)=>{
+            if (!text || typeof text !== 'string' || !text.trim()) {
+                return;
+            }
             if (text.length === 24 && /^[0-9a-f]+$/.test(text)) {
                 console.log(`[Translate API] Skipping ID: ${text.slice(0, 5)}...`);
                 return;
             }
-            // 2. Skip likely URLs or File Paths (More specific regex)
-            // Checks for strings starting with http, https, or containing common file extensions
             const isUrlOrFile = /^(https?:\/\/|\/|www\.)/.test(text) || /\.(jpg|png|svg|webp|jpeg|pdf|css|js)$/i.test(text);
             if (isUrlOrFile) {
                 console.log(`[Translate API] Skipping URL/File: ${text.slice(0, 20)}...`);
@@ -80,37 +252,40 @@ export const translateHandler = async (req)=>{
             jobs.push({
                 ref,
                 key,
-                text
+                text,
+                documentPath
             });
         };
-        // --- RECURSIVE COLLECTORS ---
-        const collectLexicalNodes = (node, _parent, _index)=>{
-            if (!node || typeof node !== 'object') return;
+        const collectLexicalNodes = (node, documentPath)=>{
+            if (!node || typeof node !== 'object') {
+                return;
+            }
             if (node.type === 'block' && node.fields && typeof node.fields === 'object') {
-                collectFields(node.fields);
+                collectFields(node.fields, documentPath);
                 return;
             }
             if (node.type === 'text' && typeof node.text === 'string') {
-                // Store original spacing info on the node for post-processing
                 const originalText = node.text;
                 const hasLeadingSpace = originalText.startsWith(' ');
                 const hasTrailingSpace = originalText.endsWith(' ');
-                // Store spacing info for later restoration
                 node._originalLeadingSpace = hasLeadingSpace;
                 node._originalTrailingSpace = hasTrailingSpace;
-                // Trim spaces for translation (DeepL might normalize them)
-                // We'll restore them after translation
                 const textToTranslate = originalText.trim();
-                registerForTranslation(node, 'text', textToTranslate);
+                registerForTranslation(node, 'text', textToTranslate, documentPath);
             }
             if (node.children && Array.isArray(node.children)) {
-                node.children.forEach((child, i)=>collectLexicalNodes(child, node, i));
+                node.children.forEach((child)=>collectLexicalNodes(child, documentPath));
             }
         };
-        const collectFields = (obj)=>{
-            if (!obj || typeof obj !== 'object') return;
+        const collectFields = (obj, pathPrefix)=>{
+            if (!obj || typeof obj !== 'object') {
+                return;
+            }
             if (Array.isArray(obj)) {
-                obj.forEach((item)=>collectFields(item));
+                obj.forEach((item, i)=>collectFields(item, [
+                        ...pathPrefix,
+                        String(i)
+                    ]));
                 return;
             }
             for (const [key, value] of Object.entries(obj)){
@@ -131,42 +306,53 @@ export const translateHandler = async (req)=>{
                     continue;
                 }
                 if (typeof value === 'string') {
-                    registerForTranslation(obj, key, value);
+                    registerForTranslation(obj, key, value, [
+                        ...pathPrefix,
+                        key
+                    ]);
                 } else if (typeof value === 'object' && value !== null && Array.isArray(value?.root?.children)) {
-                    collectLexicalNodes(value.root, value.root, undefined);
+                    collectLexicalNodes(value.root, [
+                        ...pathPrefix,
+                        key
+                    ]);
                 } else if (typeof value === 'object') {
-                    collectFields(value);
+                    collectFields(value, [
+                        ...pathPrefix,
+                        key
+                    ]);
                 }
             }
         };
-        // --- EXECUTION ---
-        console.log(`[Translate API] Translating ${collection} ${docId}...`);
-        const dataToTranslate = JSON.parse(JSON.stringify(doc));
+        const originalSnapshot = deepClone(doc);
+        const dataToTranslate = deepClone(doc);
+        console.log(`[Translate API] Translating ${collection} ${String(normalizedId)}...`);
         if (fieldName === 'all' || fieldName === 'content') {
-            collectFields(dataToTranslate);
+            collectFields(dataToTranslate, []);
         } else {
             const val = dataToTranslate?.[fieldName];
             if (typeof val === 'string') {
-                registerForTranslation(dataToTranslate, fieldName, val);
-            } else if (typeof val === 'object') {
-                collectFields(val);
+                registerForTranslation(dataToTranslate, fieldName, val, [
+                    fieldName
+                ]);
+            } else if (typeof val === 'object' && val !== null) {
+                collectFields(val, [
+                    fieldName
+                ]);
             }
         }
-        // 3. Process Batch
         if (jobs.length > 0) {
             console.log(`[DeepL] Found ${jobs.length} strings to translate.`);
-            // --- SMART BATCHING ---
-            // We batch by COUNT (max 50) AND SIZE (max 30KB) to avoid API errors
             let currentBatch = [];
             let currentBatchSize = 0;
             const MAX_BATCH_ITEMS = 50;
             const MAX_BATCH_CHARS = 30000;
-            // Function to process a single batch
             const processBatch = async (batch)=>{
-                if (batch.length === 0) return;
+                if (batch.length === 0) {
+                    return;
+                }
                 try {
                     const texts = batch.map((j)=>j.text);
-                    // @ts-ignore
+                    // @ts-expect-error DeepL batch typing
                     const results = await translator.translateText(texts, deepLSource, deepLTarget);
                     const resultsArray = Array.isArray(results) ? results : [
                         results
@@ -174,17 +360,13 @@ export const translateHandler = async (req)=>{
                     batch.forEach((job, i)=>{
                         if (resultsArray[i]?.text) {
                             let translatedText = resultsArray[i].text;
-                            // Restore spaces for Lexical text nodes
                             if (job.key === 'text' && job.ref._originalLeadingSpace !== undefined) {
-                                // Restore leading space if original had it
                                 if (job.ref._originalLeadingSpace && !translatedText.startsWith(' ')) {
                                     translatedText = ' ' + translatedText;
                                 }
-                                // Restore trailing space if original had it
                                 if (job.ref._originalTrailingSpace && !translatedText.endsWith(' ')) {
                                     translatedText = translatedText + ' ';
                                 }
-                                // Clean up the metadata
                                 delete job.ref._originalLeadingSpace;
                                 delete job.ref._originalTrailingSpace;
                             }
@@ -194,13 +376,10 @@ export const translateHandler = async (req)=>{
                     console.log(`[DeepL] Successfully translated batch of ${batch.length} items.`);
                 } catch (e) {
                     console.error(`[DeepL] BATCH FAILURE: ${e.message}`);
-                // Optional: If a batch fails, we could try one-by-one here as a fallback
                 }
             };
-            // Loop to build batches
             for (const job of jobs){
                 const textLen = job.text.length;
-                // If adding this job exceeds limits, process current batch first
                 if (currentBatch.length >= MAX_BATCH_ITEMS || currentBatchSize + textLen > MAX_BATCH_CHARS) {
                     await processBatch(currentBatch);
                     currentBatch = [];
@@ -209,94 +388,51 @@ export const translateHandler = async (req)=>{
                 currentBatch.push(job);
                 currentBatchSize += textLen;
             }
-            // Process remaining items
             if (currentBatch.length > 0) {
                 await processBatch(currentBatch);
             }
         } else {
             console.log('[DeepL] No translatable strings found (or all were filtered out).');
         }
-        // 4. Merge & Save
-        let existingTargetDoc = null;
-        try {
-            existingTargetDoc = await payload.findByID({
-                collection: collection,
-                id: numericId,
-                locale: targetLocale,
-                depth: 0,
-                req: await createLocalReq({
-                    user,
-                    locale: targetLocale
-                }, payload)
-            });
-        } catch (e) {
-        /* ignore */ }
-        let finalData = existingTargetDoc ? {
-            ...existingTargetDoc
-        } : {
-            ...dataToTranslate
-        };
-        // Deep merge helper
-        const deepMerge = (target, source)=>{
-            Object.keys(source).forEach((key)=>{
-                const sourceValue = source[key];
-                const targetValue = target[key];
-                if (sourceValue == null) return;
-                if (Array.isArray(sourceValue)) {
-                    target[key] = sourceValue;
-                    return;
-                }
-                if (typeof sourceValue === 'object' && sourceValue !== null) {
-                    if (targetValue == null || typeof targetValue !== 'object' || Array.isArray(targetValue)) {
-                        target[key] = sourceValue;
-                    } else {
-                        deepMerge(targetValue, sourceValue);
-                    }
-                } else {
-                    target[key] = sourceValue;
-                }
-            });
-            return target;
-        };
-        deepMerge(finalData, dataToTranslate);
-        delete finalData.id;
-        delete finalData.createdAt;
-        delete finalData.updatedAt;
-        delete finalData._status;
-        delete finalData.collection;
-        const convertRelationshipsToIds = (obj)=>{
-            if (!obj || typeof obj !== 'object') return obj;
-            if (Array.isArray(obj)) return obj.map(convertRelationshipsToIds);
-            const hasId = obj.id !== undefined;
-            const isMedia = hasId && (obj.filename || obj.mimeType || obj.url) && !obj.root;
-            const isRelation = hasId && (obj.collection || obj.relationTo);
-            const isContentRow = obj.serviceName !== undefined || obj.stepNumber !== undefined || obj.label !== undefined || obj.question !== undefined;
-            if ((isMedia || isRelation) && !isContentRow) return obj.id;
-            const result = {};
-            for (const [key, value] of Object.entries(obj)){
-                if (key === 'root' || value && typeof value === 'object' && value?.root) {
-                    result[key] = value;
-                } else if (value && typeof value === 'object' && !Array.isArray(value?.root?.children)) {
-                    result[key] = convertRelationshipsToIds(value);
-                } else if (Array.isArray(value)) {
-                    result[key] = value.map(convertRelationshipsToIds);
-                } else {
-                    result[key] = value;
-                }
+        const patchRoots = new Set();
+        for (const job of jobs){
+            const root = localizedRootForJobPath(job.documentPath, uniqueLocalizedPaths);
+            if (root) {
+                patchRoots.add(pathKey(root));
+            } else {
+                console.log(`[Translate API] Skipping patch for non-localized path: ${job.documentPath.join('.')}`);
             }
-            return result;
-        };
-        finalData = convertRelationshipsToIds(finalData);
-        console.log('[Translate API] Saving update...');
+        }
+        const patch = {};
+        for (const key of patchRoots){
+            const rootPath = key.split('\0');
+            const nextVal = getAt(dataToTranslate, rootPath);
+            const prevVal = getAt(originalSnapshot, rootPath);
+            if (!deepEqual(nextVal, prevVal)) {
+                setAt(patch, rootPath, deepClone(nextVal));
+            }
+        }
+        const patchData = prepareRootPatch(patch);
+        if (Object.keys(patchData).length === 0) {
+            console.log('[Translate API] No localized fields to persist (nothing changed or nothing localized).');
+            return Response.json({
+                success: true,
+                message: 'No localized changes to save.',
+                skipped: true
+            });
+        }
+        console.log('[Translate API] Patching localized roots:', [
+            ...patchRoots
+        ].map((k)=>k.split('\0').join('.')));
         const updateReq = await createLocalReq({
             user,
             locale: targetLocale
         }, payload);
         const updated = await payload.update({
             collection: collection,
-            id: numericId,
+            id: normalizedId,
             locale: targetLocale,
-            data: finalData,
+            data: patchData,
             depth: 0,
             req: updateReq,
             overrideAccess: true
@@ -316,19 +452,30 @@ export const translateHandler = async (req)=>{
         });
     }
 };
-// Helpers
 function mapDeepLSource(locale) {
     const lc = (locale || '').toLowerCase();
-    if (lc.startsWith('en')) return 'en';
-    if (lc.startsWith('ro')) return 'ro';
-    if (lc.startsWith('de')) return 'de';
+    if (lc.startsWith('en')) {
+        return 'en';
+    }
+    if (lc.startsWith('ro')) {
+        return 'ro';
+    }
+    if (lc.startsWith('de')) {
+        return 'de';
+    }
     return lc.slice(0, 2);
 }
 function mapDeepLTarget(locale) {
     const lc = (locale || '').toLowerCase();
-    if (lc === 'en') return 'en-GB';
-    if (lc.startsWith('ro')) return 'ro';
-    if (lc.startsWith('de')) return 'de';
+    if (lc === 'en') {
+        return 'en-GB';
+    }
+    if (lc.startsWith('ro')) {
+        return 'ro';
+    }
+    if (lc.startsWith('de')) {
+        return 'de';
+    }
     return lc.slice(0, 2);
 }
 

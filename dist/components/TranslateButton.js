@@ -109,12 +109,10 @@ export default function TranslateButton({ fieldToTranslate, locales = DEFAULT_LO
             // Use API route directly for custom endpoint requests.
             const apiRoute = config?.routes?.api || '/api';
             const translateUrl = `${apiRoute}/translate`;
-            // Convert id to number if it's a numeric string
-            const docIdNum = typeof effectiveId === 'string' && !Number.isNaN(Number(effectiveId)) ? Number.parseInt(effectiveId, 10) : effectiveId;
             const res = await fetch(translateUrl, {
                 body: JSON.stringify({
                     collection: String(effectiveCollectionSlug),
-                    docId: docIdNum,
+                    docId: typeof effectiveId === 'number' ? effectiveId : String(effectiveId),
                     fieldName: fieldToTranslate,
                     sourceLocale: src,
                     targetLocale: tgt
