@@ -3,15 +3,18 @@ export type LocaleOption = {
     label: string;
     value: string;
 };
+/** Slugs only, or a map of slug → enabled (truthy = enabled). */
+export type TranslationPluginCollections = CollectionSlug[] | Partial<Record<CollectionSlug, true>>;
 export type TranslationPluginConfig = {
     /**
      * DeepL API key (required)
      */
     deepLApiKey: string;
     /**
-     * List of collections to enable translation for
+     * Collection slugs to enable: an array of slugs, or an object like `{ pages: true }`.
+     * Only truthy entries count for the object form.
      */
-    collections?: Partial<Record<CollectionSlug, true>>;
+    collections?: TranslationPluginCollections;
     /**
      * Available locales for translation (defaults to ro/en/de)
      */

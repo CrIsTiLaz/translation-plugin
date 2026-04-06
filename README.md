@@ -56,11 +56,10 @@ export const plugins = [
   // ... other plugins
   translationPlugin({
     deepLApiKey: process.env.DEEPL_API_KEY!,
-    collections: {
-      pages: true,
-      posts: true,
-      services: true,
-    },
+    // Either: array of collection slugs (must match `slug` in Payload exactly)
+    collections: ['pages', 'posts', 'services'],
+    // Or: map of slug → true (falsy entries are ignored)
+    // collections: { pages: true, posts: true, services: true },
   }),
 ]
 ```

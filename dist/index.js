@@ -1,4 +1,39 @@
 import { translateHandler, setGlobalDeepLApiKey } from './endpoints/translateHandler.js';
+function normalizeEnabledCollectionSlugs(collections) {
+    if (collections == null) {
+        return [];
+    }
+    if (Array.isArray(collections)) {
+        const slugs = [];
+        for (const entry of collections){
+            if (typeof entry !== 'string') {
+                console.warn(`[Translation Plugin] Skipping invalid collections entry (expected string, got ${typeof entry}): ${JSON.stringify(entry)}`);
+                continue;
+            }
+            const trimmed = entry.trim();
+            if (!trimmed) {
+                console.warn(`[Translation Plugin] Skipping invalid collections entry (empty string): ${JSON.stringify(entry)}`);
+                continue;
+            }
+            slugs.push(trimmed);
+        }
+        return slugs;
+    }
+    const slugs = [];
+    for (const key of Object.keys(collections)){
+        const record = collections;
+        if (!record[key]) {
+            continue;
+        }
+        const trimmed = key.trim();
+        if (!trimmed) {
+            console.warn(`[Translation Plugin] Skipping invalid collections key (empty string): ${JSON.stringify(key)}`);
+            continue;
+        }
+        slugs.push(trimmed);
+    }
+    return slugs;
+}
 export const translationPlugin = (pluginOptions)=>(config)=>{
         console.log('[Translation Plugin] Plugin function called');
         console.log('[Translation Plugin] Options:', {
@@ -48,10 +83,11 @@ export const translationPlugin = (pluginOptions)=>(config)=>{
             });
         }
         // Add translation button to configured collections
+        const enabledCollectionSlugs = normalizeEnabledCollectionSlugs(pluginOptions.collections);
         console.log('[Translation Plugin] Checking collections configuration:', pluginOptions.collections);
-        if (pluginOptions.collections) {
-            console.log('[Translation Plugin] Processing collections:', Object.keys(pluginOptions.collections));
-            for(const collectionSlug in pluginOptions.collections){
+        if (enabledCollectionSlugs.length > 0) {
+            console.log('[Translation Plugin] Processing collections:', enabledCollectionSlugs);
+            for (const collectionSlug of enabledCollectionSlugs){
                 console.log('[Translation Plugin] Processing collection:', collectionSlug);
                 const collection = config.collections.find((collection)=>collection.slug === collectionSlug);
                 if (collection) {
@@ -182,7 +218,7 @@ export const translationPlugin = (pluginOptions)=>(config)=>{
                 }
             }
         } else {
-            console.log('[Translation Plugin] WARNING: No collections configured in plugin options');
+            console.warn('[Translation Plugin] WARNING: No enabled collections in plugin options (use a string[] of slugs or an object with truthy flags, e.g. { pages: true })');
         }
         /**
      * If the plugin is disabled, we still want to keep added collections/fields so the database schema is consistent which is important for migrations.

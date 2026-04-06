@@ -7,15 +7,67 @@ export type LocaleOption = {
   value: string
 }
 
+/** Slugs only, or a map of slug → enabled (truthy = enabled). */
+export type TranslationPluginCollections =
+  | CollectionSlug[]
+  | Partial<Record<CollectionSlug, true>>
+
+function normalizeEnabledCollectionSlugs(
+  collections: TranslationPluginCollections | undefined,
+): CollectionSlug[] {
+  if (collections == null) {
+    return []
+  }
+
+  if (Array.isArray(collections)) {
+    const slugs: CollectionSlug[] = []
+    for (const entry of collections) {
+      if (typeof entry !== 'string') {
+        console.warn(
+          `[Translation Plugin] Skipping invalid collections entry (expected string, got ${typeof entry}): ${JSON.stringify(entry)}`,
+        )
+        continue
+      }
+      const trimmed = entry.trim()
+      if (!trimmed) {
+        console.warn(
+          `[Translation Plugin] Skipping invalid collections entry (empty string): ${JSON.stringify(entry)}`,
+        )
+        continue
+      }
+      slugs.push(trimmed as CollectionSlug)
+    }
+    return slugs
+  }
+
+  const slugs: CollectionSlug[] = []
+  for (const key of Object.keys(collections)) {
+    const record = collections as Partial<Record<string, true>>
+    if (!record[key]) {
+      continue
+    }
+    const trimmed = key.trim()
+    if (!trimmed) {
+      console.warn(
+        `[Translation Plugin] Skipping invalid collections key (empty string): ${JSON.stringify(key)}`,
+      )
+      continue
+    }
+    slugs.push(trimmed as CollectionSlug)
+  }
+  return slugs
+}
+
 export type TranslationPluginConfig = {
   /**
    * DeepL API key (required)
    */
   deepLApiKey: string
   /**
-   * List of collections to enable translation for
+   * Collection slugs to enable: an array of slugs, or an object like `{ pages: true }`.
+   * Only truthy entries count for the object form.
    */
-  collections?: Partial<Record<CollectionSlug, true>>
+  collections?: TranslationPluginCollections
   /**
    * Available locales for translation (defaults to ro/en/de)
    */
@@ -79,10 +131,11 @@ export const translationPlugin =
     }
 
     // Add translation button to configured collections
+    const enabledCollectionSlugs = normalizeEnabledCollectionSlugs(pluginOptions.collections)
     console.log('[Translation Plugin] Checking collections configuration:', pluginOptions.collections)
-    if (pluginOptions.collections) {
-      console.log('[Translation Plugin] Processing collections:', Object.keys(pluginOptions.collections))
-      for (const collectionSlug in pluginOptions.collections) {
+    if (enabledCollectionSlugs.length > 0) {
+      console.log('[Translation Plugin] Processing collections:', enabledCollectionSlugs)
+      for (const collectionSlug of enabledCollectionSlugs) {
         console.log('[Translation Plugin] Processing collection:', collectionSlug)
         const collection = config.collections.find(
           (collection) => collection.slug === collectionSlug,
@@ -228,7 +281,9 @@ export const translationPlugin =
         }
       }
     } else {
-      console.log('[Translation Plugin] WARNING: No collections configured in plugin options')
+      console.warn(
+        '[Translation Plugin] WARNING: No enabled collections in plugin options (use a string[] of slugs or an object with truthy flags, e.g. { pages: true })',
+      )
     }
 
     /**
