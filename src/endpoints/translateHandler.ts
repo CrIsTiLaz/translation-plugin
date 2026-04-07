@@ -241,19 +241,181 @@ function getAt(obj: any, path: string[]): any {
   return cur
 }
 
-function setAt(target: any, path: string[], value: any): void {
-  if (path.length === 0) {
+type SchemaPathStep =
+  | { kind: 'field'; segment: string; field: any }
+  | { kind: 'arrayIndex'; index: number }
+
+/**
+ * Same walk as document paths in the resolver: schema has no array indices, documents use "0","1",…
+ * Emits steps so patch writes can use [] + numeric indices instead of { "0": … }.
+ */
+function explainSchemaPathForPatch(
+  rootPath: string[],
+  collectionFields: any[] | undefined,
+): SchemaPathStep[] | null {
+  if (!rootPath.length || !collectionFields?.length) {
+    return null
+  }
+
+  const steps: SchemaPathStep[] = []
+  let fields = collectionFields
+  let parentIsLocalized = false
+  let i = 0
+
+  while (i < rootPath.length) {
+    const segment = rootPath[i]
+
+    if (/^\d+$/.test(segment)) {
+      const last = steps[steps.length - 1]
+      const lastField = last?.kind === 'field' ? last.field : null
+      const isRepeater =
+        lastField?.type === 'array' || lastField?.type === 'blocks'
+      if (!last || last.kind !== 'field' || !isRepeater) {
+        return null
+      }
+      steps.push({ kind: 'arrayIndex', index: Number(segment) })
+      i++
+      continue
+    }
+
+    const step = matchFieldStep(fields, segment, parentIsLocalized)
+    if (!step) {
+      return null
+    }
+
+    const { field } = step
+
+    if (field?.type === '__namedTab') {
+      steps.push({ kind: 'field', segment, field })
+      fields = step.nextFields
+      parentIsLocalized = step.nextParentIsLocalized
+      i++
+      continue
+    }
+
+    steps.push({ kind: 'field', segment, field })
+    fields = step.nextFields
+    parentIsLocalized = step.nextParentIsLocalized
+    i++
+  }
+
+  return steps
+}
+
+/**
+ * Write `value` at the path described by `steps`, allocating [] for Payload array fields
+ * and merging row `id` from `originalDoc` for array rows so updates stay stable.
+ */
+function mergeLocalizedValueIntoPatch(
+  patch: Record<string, unknown>,
+  originalDoc: any,
+  steps: SchemaPathStep[],
+  value: unknown,
+): void {
+  if (steps.length === 0) {
     return
   }
-  let cur = target
-  for (let i = 0; i < path.length - 1; i++) {
-    const p = path[i]
-    if (cur[p] == null || typeof cur[p] !== 'object') {
-      cur[p] = {}
+
+  let curPatch: any = patch
+  let curOrig: any = originalDoc
+
+  for (let depth = 0; depth < steps.length; depth++) {
+    const step = steps[depth]
+    const isLast = depth === steps.length - 1
+
+    if (step.kind === 'arrayIndex') {
+      if (!Array.isArray(curPatch)) {
+        return
+      }
+      const idx = step.index
+      while (curPatch.length <= idx) {
+        curPatch.push({})
+      }
+      let row = curPatch[idx]
+      if (!row || typeof row !== 'object' || Array.isArray(row)) {
+        row = {}
+        curPatch[idx] = row
+      }
+      const origRow = Array.isArray(curOrig) ? curOrig[idx] : undefined
+      if (
+        origRow &&
+        typeof origRow === 'object' &&
+        !Array.isArray(origRow) &&
+        origRow.id !== undefined &&
+        origRow.id !== null
+      ) {
+        row.id = origRow.id
+      }
+      if (isLast) {
+        return
+      }
+      curPatch = row
+      curOrig = origRow
+      continue
     }
-    cur = cur[p]
+
+    if (step.kind !== 'field') {
+      return
+    }
+
+    const key = step.segment
+    const field = step.field
+
+    if (field?.type === '__namedTab') {
+      if (isLast) {
+        return
+      }
+      if (!curPatch[key] || typeof curPatch[key] !== 'object' || Array.isArray(curPatch[key])) {
+        curPatch[key] = {}
+      }
+      curPatch = curPatch[key]
+      curOrig = curOrig?.[key]
+      continue
+    }
+
+    if (isLast) {
+      curPatch[key] = deepClone(value)
+      return
+    }
+
+    const next = steps[depth + 1]
+
+    if (next?.kind === 'arrayIndex') {
+      if (field.type !== 'array' && field.type !== 'blocks') {
+        return
+      }
+      if (!Array.isArray(curPatch[key])) {
+        curPatch[key] = []
+      }
+      curPatch = curPatch[key]
+      curOrig = curOrig?.[key]
+      continue
+    }
+
+    if (!curPatch[key] || typeof curPatch[key] !== 'object' || Array.isArray(curPatch[key])) {
+      curPatch[key] = {}
+    }
+    curPatch = curPatch[key]
+    curOrig = curOrig?.[key]
   }
-  cur[path[path.length - 1]] = value
+}
+
+function logPatchArrayShapes(
+  patchData: Record<string, unknown>,
+  collectionFields: any[] | undefined,
+): void {
+  if (!collectionFields?.length) {
+    return
+  }
+  for (const [topKey, val] of Object.entries(patchData)) {
+    const step = matchFieldStep(collectionFields, topKey, false)
+    const field = step?.field
+    if (field?.type === 'array' || field?.type === 'blocks') {
+      console.log(
+        `[Translate API] patch array shape "${topKey}": Array.isArray=${Array.isArray(val)} (expected true)`,
+      )
+    }
+  }
 }
 
 function deepClone<T>(v: T): T {
@@ -543,11 +705,20 @@ export const translateHandler: PayloadHandler = async (req) => {
       const nextVal = getAt(dataToTranslate, rootPath)
       const prevVal = getAt(originalSnapshot, rootPath)
       if (!deepEqual(nextVal, prevVal)) {
-        setAt(patch, rootPath, deepClone(nextVal))
+        const steps = explainSchemaPathForPatch(rootPath, collectionEntity.config.fields)
+        if (!steps?.length) {
+          console.warn(
+            `[Translate API] Could not map patch path to schema, skipping: ${rootPath.join('.')}`,
+          )
+          continue
+        }
+        mergeLocalizedValueIntoPatch(patch, originalSnapshot, steps, nextVal)
       }
     }
 
     const patchData = prepareRootPatch(patch)
+
+    logPatchArrayShapes(patchData, collectionEntity.config.fields)
 
     if (Object.keys(patchData).length === 0) {
       console.log('[Translate API] No localized fields to persist (nothing changed or nothing localized).')
