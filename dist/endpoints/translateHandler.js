@@ -22,17 +22,166 @@ export function setGlobalDeepLApiKey(apiKey) {
     }
     return s;
 }
-function pathsEqual(a, b) {
-    return a.length === b.length && a.every((seg, i)=>seg === b[i]);
-}
-/** Longest prefix of jobPath that equals a localized schema path (exact match on prefix segments). */ function localizedRootForJobPath(jobPath, localizedPaths) {
-    for(let len = jobPath.length; len >= 1; len--){
-        const prefix = jobPath.slice(0, len);
-        if (localizedPaths.some((L)=>pathsEqual(L, prefix))) {
-            return prefix;
+/**
+ * Match one path segment against the current field list (tabs / unnamed rows recurse transparently).
+ * Named tabs require the segment to equal the tab `name` before entering that tab's fields.
+ */ function matchFieldStep(fields, segment, parentIsLocalized) {
+    if (!fields?.length) {
+        return null;
+    }
+    for (const field of fields){
+        if (!field || field.type === 'ui') {
+            continue;
         }
+        if (field.type === 'tabs' && field.tabs) {
+            for (const tab of field.tabs){
+                if (tabHasName(tab) && tab.name) {
+                    if (String(tab.name) === segment) {
+                        return {
+                            field: {
+                                type: '__namedTab'
+                            },
+                            parentIsLocalizedForField: parentIsLocalized,
+                            nextFields: tab.fields || [],
+                            nextParentIsLocalized: parentIsLocalized
+                        };
+                    }
+                    continue;
+                }
+                const inner = matchFieldStep(tab.fields, segment, parentIsLocalized);
+                if (inner) {
+                    return inner;
+                }
+            }
+            continue;
+        }
+        if ((field.type === 'row' || field.type === 'collapsible') && !('name' in field && field.name)) {
+            const inner = matchFieldStep(field.fields, segment, parentIsLocalized);
+            if (inner) {
+                return inner;
+            }
+            continue;
+        }
+        if (field.type === 'tab') {
+            const inner = matchFieldStep(field.fields, segment, parentIsLocalized);
+            if (inner) {
+                return inner;
+            }
+            continue;
+        }
+        if (!fieldAffectsData(field)) {
+            continue;
+        }
+        if (String(field.name) !== segment) {
+            continue;
+        }
+        const loc = fieldShouldBeLocalized({
+            field,
+            parentIsLocalized
+        });
+        if (field.type === 'array' && field.fields?.length) {
+            return {
+                field,
+                parentIsLocalizedForField: parentIsLocalized,
+                nextFields: field.fields,
+                nextParentIsLocalized: loc
+            };
+        }
+        if (field.type === 'group' && field.fields?.length) {
+            return {
+                field,
+                parentIsLocalizedForField: parentIsLocalized,
+                nextFields: field.fields,
+                nextParentIsLocalized: loc
+            };
+        }
+        if (field.type === 'blocks' && field.blocks?.length) {
+            const merged = field.blocks.flatMap((b)=>b.fields || []);
+            return {
+                field,
+                parentIsLocalizedForField: parentIsLocalized,
+                nextFields: merged,
+                nextParentIsLocalized: loc
+            };
+        }
+        if ((field.type === 'row' || field.type === 'collapsible') && field.fields?.length) {
+            return {
+                field,
+                parentIsLocalizedForField: parentIsLocalized,
+                nextFields: field.fields,
+                nextParentIsLocalized: parentIsLocalized || loc
+            };
+        }
+        return {
+            field,
+            parentIsLocalizedForField: parentIsLocalized,
+            nextFields: [],
+            nextParentIsLocalized: parentIsLocalized || loc
+        };
     }
     return null;
+}
+/**
+ * Map a translation job's document path to the Payload update path for localized data.
+ * Document paths include numeric array indices ("0", "1"); schema definitions do not.
+ * Walk both together so e.g. ['keyStats','0','name'] resolves to that full path when `name`
+ * is localized inside a non-localized array, or to ['keyStats'] when the whole array is localized.
+ */ function resolveLocalizedPatchRootForJobPath(jobPath, collectionFields) {
+    if (!jobPath.length || !collectionFields?.length) {
+        return null;
+    }
+    let fields = collectionFields;
+    let parentIsLocalized = false;
+    let docPath = [];
+    let bestRoot = null;
+    let i = 0;
+    while(i < jobPath.length){
+        const segment = jobPath[i];
+        if (/^\d+$/.test(segment)) {
+            if (docPath.length === 0) {
+                return bestRoot;
+            }
+            docPath = [
+                ...docPath,
+                segment
+            ];
+            i++;
+            continue;
+        }
+        const step = matchFieldStep(fields, segment, parentIsLocalized);
+        if (!step) {
+            break;
+        }
+        const { field } = step;
+        const pll = step.parentIsLocalizedForField;
+        if (field?.type === '__namedTab') {
+            docPath = [
+                ...docPath,
+                segment
+            ];
+            fields = step.nextFields;
+            parentIsLocalized = step.nextParentIsLocalized;
+            i++;
+            continue;
+        }
+        const loc = fieldShouldBeLocalized({
+            field,
+            parentIsLocalized: pll
+        });
+        docPath = [
+            ...docPath,
+            segment
+        ];
+        i++;
+        if (loc) {
+            bestRoot = [
+                ...docPath
+            ];
+        }
+        fields = step.nextFields;
+        parentIsLocalized = step.nextParentIsLocalized;
+    }
+    return bestRoot;
 }
 function getAt(obj, path) {
     let cur = obj;
@@ -63,88 +212,6 @@ function deepClone(v) {
 }
 function deepEqual(a, b) {
     return JSON.stringify(a) === JSON.stringify(b);
-}
-/**
- * Collect exact data paths for fields that should be stored per locale (Payload schema).
- */ function collectLocalizedSchemaPaths(fields, parentIsLocalized, prefix, out) {
-    if (!fields?.length) {
-        return;
-    }
-    for (const field of fields){
-        if (!field || field.type === 'ui') {
-            continue;
-        }
-        if (field.type === 'tabs' && field.tabs) {
-            for (const tab of field.tabs){
-                const nextPrefix = tabHasName(tab) && tab.name ? [
-                    ...prefix,
-                    String(tab.name)
-                ] : prefix;
-                collectLocalizedSchemaPaths(tab.fields || [], parentIsLocalized, nextPrefix, out);
-            }
-            continue;
-        }
-        if ((field.type === 'row' || field.type === 'collapsible') && !('name' in field && field.name)) {
-            collectLocalizedSchemaPaths(field.fields || [], parentIsLocalized, prefix, out);
-            continue;
-        }
-        if (field.type === 'tab') {
-            const nextPrefix = 'name' in field && field.name ? [
-                ...prefix,
-                String(field.name)
-            ] : prefix;
-            collectLocalizedSchemaPaths(field.fields || [], parentIsLocalized, nextPrefix, out);
-            continue;
-        }
-        if (!fieldAffectsData(field)) {
-            continue;
-        }
-        const name = String(field.name);
-        const path = [
-            ...prefix,
-            name
-        ];
-        const loc = fieldShouldBeLocalized({
-            field,
-            parentIsLocalized
-        });
-        if (field.type === 'group' && field.fields?.length) {
-            if (loc) {
-                out.push(path);
-            } else {
-                collectLocalizedSchemaPaths(field.fields, parentIsLocalized, path, out);
-            }
-            continue;
-        }
-        if (field.type === 'array' && field.fields?.length) {
-            if (loc) {
-                out.push(path);
-            } else {
-                collectLocalizedSchemaPaths(field.fields, parentIsLocalized, path, out);
-            }
-            continue;
-        }
-        if (field.type === 'blocks') {
-            if (loc) {
-                out.push(path);
-            } else {
-                for (const block of field.blocks || []){
-                    if (block?.fields?.length) {
-                        collectLocalizedSchemaPaths(block.fields, parentIsLocalized, path, out);
-                    }
-                }
-            }
-            continue;
-        }
-        const hasSubFields = (field.type === 'collapsible' || field.type === 'row') && field.fields?.length;
-        if (hasSubFields) {
-            collectLocalizedSchemaPaths(field.fields, parentIsLocalized, path, out);
-            continue;
-        }
-        if (loc) {
-            out.push(path);
-        }
-    }
 }
 /** Remove timestamps / status from update payload; keep row `id` inside arrays. */ function stripReservedKeysFromPatch(value) {
     if (value === null || typeof value !== 'object') {
@@ -205,13 +272,7 @@ export const translateHandler = async (req)=>{
             status: 400
         });
     }
-    const localizedSchemaPaths = [];
-    collectLocalizedSchemaPaths(collectionEntity.config.fields, false, [], localizedSchemaPaths);
     const pathKey = (p)=>p.map(String).join('\0');
-    const uniqueLocalizedPaths = Array.from(new Map(localizedSchemaPaths.map((p)=>[
-            pathKey(p),
-            p
-        ])).values());
     try {
         const payloadReq = await createLocalReq({
             user,
@@ -396,7 +457,7 @@ export const translateHandler = async (req)=>{
         }
         const patchRoots = new Set();
         for (const job of jobs){
-            const root = localizedRootForJobPath(job.documentPath, uniqueLocalizedPaths);
+            const root = resolveLocalizedPatchRootForJobPath(job.documentPath, collectionEntity.config.fields);
             if (root) {
                 patchRoots.add(pathKey(root));
             } else {

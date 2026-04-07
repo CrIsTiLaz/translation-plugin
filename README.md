@@ -87,7 +87,7 @@ Then open the admin (e.g. [http://localhost:3000/admin](http://localhost:3000/ad
 
 The admin **Translate** control calls `fieldName: "all"`, which walks the **current locale** document, sends translatable strings to DeepL, then updates **only localized fields** for the target locale. Non-localized fields (e.g. a shared `name` on a `team`-style collection) are **not** sent on that update, which avoids merging the full document and triggering validation errors on mixed localized / non-localized shapes.
 
-**Supported well:** text, textarea, rich text (Lexical JSON), and localized **groups** and **arrays** (including row `id` values left intact—relationship rows are not flattened to bare ids). **Blocks** fields work when the whole field is localized; deeply nested block layouts with per-inner-field localization may need schema review.
+**Supported well:** text, textarea, rich text (Lexical JSON), localized **groups**, arrays that are localized as a whole, and **arrays whose rows contain localized fields** (e.g. `keyStats[].name` with `localized: true` on the child fields—the handler maps document paths like `keyStats.0.name` onto the correct patch roots). Row `id` values stay intact (relationship rows are not flattened to bare ids). **Blocks** fields work when the whole field is localized; deeply nested block layouts with per-inner-field localization may need schema review.
 
 **`fieldName: "all"`** can be heavy on large documents (many strings → many DeepL calls). Prefer a dedicated field name in the future if you add per-field translation in the UI.
 
