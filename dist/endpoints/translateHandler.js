@@ -657,6 +657,9 @@ function mapDeepLSource(locale) {
     if (lc.startsWith('de')) {
         return 'de';
     }
+    if (lc.startsWith('hu')) {
+        return 'hu';
+    }
     return lc.slice(0, 2);
 }
 function mapDeepLTarget(locale) {
@@ -669,6 +672,9 @@ function mapDeepLTarget(locale) {
     }
     if (lc.startsWith('de')) {
         return 'de';
+    }
+    if (lc.startsWith('hu')) {
+        return 'hu';
     }
     return lc.slice(0, 2);
 }

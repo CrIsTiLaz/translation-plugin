@@ -16,7 +16,7 @@ export type TranslationPluginConfig = {
      */
     collections?: TranslationPluginCollections;
     /**
-     * Available locales for translation (defaults to ro/en/de)
+     * Available locales for translation (defaults to ro, en, de, hu)
      */
     locales?: LocaleOption[];
     /**

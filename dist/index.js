@@ -60,6 +60,10 @@ export const translationPlugin = (pluginOptions)=>(config)=>{
             {
                 label: 'Deutsch',
                 value: 'de'
+            },
+            {
+                label: 'Magyar',
+                value: 'hu'
             }
         ];
         const locales = pluginOptions.locales || defaultLocales;

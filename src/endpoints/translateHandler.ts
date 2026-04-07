@@ -767,6 +767,9 @@ function mapDeepLSource(locale: string): string | null {
   if (lc.startsWith('de')) {
     return 'de'
   }
+  if (lc.startsWith('hu')) {
+    return 'hu'
+  }
   return lc.slice(0, 2)
 }
 
@@ -780,6 +783,9 @@ function mapDeepLTarget(locale: string): string {
   }
   if (lc.startsWith('de')) {
     return 'de'
+  }
+  if (lc.startsWith('hu')) {
+    return 'hu'
   }
   return lc.slice(0, 2)
 }

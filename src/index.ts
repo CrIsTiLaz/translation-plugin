@@ -69,7 +69,7 @@ export type TranslationPluginConfig = {
    */
   collections?: TranslationPluginCollections
   /**
-   * Available locales for translation (defaults to ro/en/de)
+   * Available locales for translation (defaults to ro, en, de, hu)
    */
   locales?: LocaleOption[]
   /**
@@ -102,6 +102,7 @@ export const translationPlugin =
       { label: 'Română', value: 'ro' },
       { label: 'English', value: 'en' },
       { label: 'Deutsch', value: 'de' },
+      { label: 'Magyar', value: 'hu' },
     ]
     const locales = pluginOptions.locales || defaultLocales
     console.log('[Translation Plugin] Using locales:', locales)

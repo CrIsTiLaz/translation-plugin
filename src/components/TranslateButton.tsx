@@ -14,6 +14,7 @@ const DEFAULT_LOCALES = [
   { label: 'Română', value: 'ro' },
   { label: 'English', value: 'en' },
   { label: 'Deutsch', value: 'de' },
+  { label: 'Magyar', value: 'hu' },
 ]
 
 /**

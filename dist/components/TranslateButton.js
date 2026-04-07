@@ -14,6 +14,10 @@ const DEFAULT_LOCALES = [
     {
         label: 'Deutsch',
         value: 'de'
+    },
+    {
+        label: 'Magyar',
+        value: 'hu'
     }
 ];
 /**

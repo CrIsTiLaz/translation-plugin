@@ -47,6 +47,8 @@ node --input-type=module -e "import { createRequire } from 'node:module'; const 
 
 ### 2. Configure
 
+Default translation locales in the admin are **ro**, **en**, **de**, and **hu** (Magyar); pass `locales` in plugin options to match your Payload `localization` setup.
+
 Register the plugin in your Payload config (e.g. `src/plugins/index.ts`) with the collections you want to enable:
 
 ```ts
